@@ -15,7 +15,7 @@
   Проверка импорта руками: `YD_OAUTH_TOKEN=x venv/bin/python -c "import server"`.
 - Зависимости/окружение: `python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt`;
   в репозитории venv уже есть (`venv/`, gitignored). Интерпретатор — `python3` (≥ 3.10).
-- Тесты: `python3 test_safety.py` — офлайн, без токенов и сети; сейчас 78 проверок зелёные.
+- Тесты: `python3 test_safety.py` — офлайн, без токенов и сети; проверяет защитные режимы, мультиаккаунтность и payload ЕПК.
 
 ## Деплой
 

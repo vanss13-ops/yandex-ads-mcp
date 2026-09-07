@@ -12,6 +12,7 @@ Run: python3 test_safety.py
 """
 import os
 import sys
+import asyncio
 
 # Token must be present for the module to import cleanly under some setups.
 os.environ.setdefault("YD_OAUTH_TOKEN", "test-token")
@@ -37,6 +38,7 @@ def check(name, cond):
 print("== mutating classification ==")
 MUTATING = [
     "yd_campaigns_add", "yd_campaigns_update", "yd_campaigns_action",
+    "yd_unified_campaigns_add", "yd_unified_adgroups_add", "yd_responsive_ads_add",
     "yd_ads_update", "yd_keyword_bids_set_auto", "yd_bid_modifiers_toggle",
     "yd_callouts_link", "yd_metrika_label_link", "yd_metrika_goal_delete",
     "yd_metrika_grant_add", "yd_metrika_upload_conversions", "yd_videos_upload",
@@ -127,6 +129,43 @@ aud_props = tools["yd_audience_segment_delete"].inputSchema["properties"]
 check("audience tool has no client_login", "client_login" not in aud_props)
 check("mutating audience tool exposes confirm (YD_CONFIRM on)", "confirm" in aud_props)
 check("all audience tools dispatched", len(server._audience_dispatch) == len(server.AUDIENCE_TOOLS))
+
+print("== Unified Performance Campaign payloads ==")
+captured = []
+
+async def capture_api501(_client, service, method, params):
+    captured.append((service, method, params))
+    return {"result": {"AddResults": [{"Id": 1}]}}
+
+original_api501 = server._api501
+server._api501 = capture_api501
+try:
+    asyncio.run(server._handle_unified_campaigns_add(None, {"campaigns": [{
+        "name": "ЕПК тест", "start_date": "2026-09-03", "weekly_spend_limit": 1250,
+        "counter_ids": [123], "exact_phrase_matching": True,
+    }]}))
+    service, method, params = captured.pop()
+    campaign = params["Campaigns"][0]
+    check("Unified campaign uses v501 handler", (service, method) == ("campaigns", "add"))
+    check("Unified campaign is typed", "UnifiedCampaign" in campaign)
+    check("Unified campaign budget is micros", campaign["UnifiedCampaign"]["BiddingStrategy"]["Search"]["WbMaximumClicks"]["WeeklySpendLimit"] == 1250000000)
+    check("Unified campaign disables network", campaign["UnifiedCampaign"]["BiddingStrategy"]["Network"]["BiddingStrategyType"] == "SERVING_OFF")
+
+    asyncio.run(server._handle_unified_adgroups_add(None, {"groups": [{
+        "campaign_id": 11, "name": "Перевозчики", "region_ids": [0, -59],
+    }]}))
+    service, method, params = captured.pop()
+    check("Unified ad group uses v501 handler", (service, method) == ("adgroups", "add"))
+    check("Unified ad group has required offer-retargeting", params["AdGroups"][0]["UnifiedAdGroup"] == {"OfferRetargeting": "NO"})
+
+    asyncio.run(server._handle_responsive_ads_add(None, {"ads": [{
+        "ad_group_id": 22, "titles": ["ЭТрН под ключ"], "texts": ["Подключим и проведём первый рейс."], "href": "https://example.test",
+    }]}))
+    service, method, params = captured.pop()
+    check("Responsive ad uses v501 handler", (service, method) == ("ads", "add"))
+    check("Responsive ad is combinatorial", "ResponsiveAd" in params["Ads"][0])
+finally:
+    server._api501 = original_api501
 
 print("== IAM expiresAt parsing ==")
 from tools_direct_extra import iam_expiry  # noqa: E402

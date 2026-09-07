@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MCP Server for Yandex Direct API v5, Yandex Metrika API, Yandex Audience API, and Wordstat API.
 
-Provides 151 tools for managing advertising campaigns, audiences, web analytics, and keyword research.
+Provides 154 tools for managing advertising campaigns, audiences, web analytics, and keyword research.
 See README.md for setup instructions.
 """
 
@@ -135,6 +135,21 @@ async def _api(client: httpx.AsyncClient, service: str, method: str, params: dic
     return annotate_partial(data)
 
 
+async def _api501(client: httpx.AsyncClient, service: str, method: str, params: dict) -> dict:
+    """Call the Direct API v501 endpoint required for Unified campaigns."""
+    base_url = _base_url().replace("/v5", "/v501")
+    url = f"{base_url}/{service}"
+    body = {"method": method, "params": params}
+    _log_body("v501 REQUEST %s %s: %s", url, method, json.dumps(body, ensure_ascii=False)[:2000])
+    resp = await request_with_retry(client, url, headers=_headers(), json_body=body, timeout=120)
+    log_units(resp)
+    data = resp.json()
+    _log_body("v501 RESPONSE %s: %s", resp.status_code, json.dumps(data, ensure_ascii=False)[:2000])
+    if "error" in data:
+        raise Exception(f"API error {data['error'].get('error_code')}: {data['error'].get('error_detail', data['error'].get('error_string'))}")
+    return annotate_partial(data)
+
+
 # ── Access control ─────────────────────────────────────────────────────
 
 _MUTATING_TOKENS = ("_add", "_create", "_update", "_delete", "_action",
@@ -215,6 +230,85 @@ TOOLS = [
                 "region_ids": {"type": "array", "items": {"type": "integer"}, "description": "Region IDs for targeting"},
             },
             "required": ["name", "start_date"],
+        },
+    ),
+    Tool(
+        name="yd_unified_campaigns_add",
+        description="Create Unified Performance Campaigns (ЕПК) through Direct API v501. New campaigns are created as drafts; use yd_campaigns_action with resume only after review.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "campaigns": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Campaign name (max 255 chars)"},
+                            "start_date": {"type": "string", "description": "YYYY-MM-DD"},
+                            "end_date": {"type": "string", "description": "YYYY-MM-DD (optional)"},
+                            "weekly_spend_limit": {"type": "number", "description": "Weekly budget in rubles"},
+                            "search_strategy": {"type": "string", "enum": ["WB_MAXIMUM_CLICKS"], "description": "Currently supported typed strategy"},
+                            "network_strategy": {"type": "string", "enum": ["SERVING_OFF"], "description": "Use SERVING_OFF for search-only campaigns"},
+                            "counter_ids": {"type": "array", "items": {"type": "integer"}},
+                            "exact_phrase_matching": {"type": "boolean", "description": "Enable exact phrase matching"},
+                            "tracking_params": {"type": "string", "description": "UTM template without a leading ? (optional)"},
+                        },
+                        "required": ["name", "start_date", "weekly_spend_limit"],
+                    },
+                },
+            },
+            "required": ["campaigns"],
+        },
+    ),
+    Tool(
+        name="yd_unified_adgroups_add",
+        description="Create Unified Performance Campaign ad groups through Direct API v501.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "campaign_id": {"type": "integer"},
+                            "name": {"type": "string"},
+                            "region_ids": {"type": "array", "items": {"type": "integer"}, "description": "0 for Russia/all regions, negative IDs exclude regions"},
+                            "negative_keywords": {"type": "array", "items": {"type": "string"}},
+                            "offer_retargeting": {"type": "string", "enum": ["YES", "NO"], "description": "Required UnifiedAdGroup setting; normally NO for services"},
+                        },
+                        "required": ["campaign_id", "name", "region_ids"],
+                    },
+                },
+            },
+            "required": ["groups"],
+        },
+    ),
+    Tool(
+        name="yd_responsive_ads_add",
+        description="Create combinatorial (ResponsiveAd) ads through Direct API v501 for Unified Performance Campaign ad groups.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ads": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ad_group_id": {"type": "integer"},
+                            "titles": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 7, "description": "1–7 titles, each max 56 chars"},
+                            "texts": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3, "description": "1–3 texts, each max 81 chars"},
+                            "href": {"type": "string"},
+                            "ad_image_hashes": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 5},
+                            "sitelink_set_id": {"type": "integer"},
+                            "ad_extension_ids": {"type": "array", "items": {"type": "integer"}},
+                            "erir_ad_description": {"type": "string"},
+                        },
+                        "required": ["ad_group_id", "titles", "texts", "href"],
+                    },
+                },
+            },
+            "required": ["ads"],
         },
     ),
     Tool(
@@ -1092,16 +1186,22 @@ async def _dispatch(name: str, arguments: dict):
                 return await _handle_campaigns_get(client, arguments)
             elif name == "yd_campaigns_add":
                 return await _handle_campaigns_add(client, arguments)
+            elif name == "yd_unified_campaigns_add":
+                return await _handle_unified_campaigns_add(client, arguments)
             elif name == "yd_campaigns_update":
                 return await _handle_campaigns_update(client, arguments)
             elif name == "yd_campaigns_action":
                 return await _handle_campaigns_action(client, arguments)
             elif name == "yd_adgroups_add":
                 return await _handle_adgroups_add(client, arguments)
+            elif name == "yd_unified_adgroups_add":
+                return await _handle_unified_adgroups_add(client, arguments)
             elif name == "yd_adgroups_get":
                 return await _handle_adgroups_get(client, arguments)
             elif name == "yd_ads_add":
                 return await _handle_ads_add(client, arguments)
+            elif name == "yd_responsive_ads_add":
+                return await _handle_responsive_ads_add(client, arguments)
             elif name == "yd_ads_update":
                 return await _handle_ads_update(client, arguments)
             elif name == "yd_ads_get":
@@ -1216,6 +1316,82 @@ async def _handle_campaigns_get(client, args):
         "FieldNames": ["Id", "Name", "Status", "State", "Type", "StartDate", "DailyBudget", "Statistics"],
     }
     data = await _api(client, "campaigns", "get", params)
+    return _result(data.get("result", data))
+
+
+def _validate_string_items(items, *, field, minimum, maximum, limit):
+    if not minimum <= len(items) <= maximum:
+        raise ValueError(f"{field} must contain from {minimum} to {maximum} items")
+    too_long = [item for item in items if len(item) > limit]
+    if too_long:
+        raise ValueError(f"{field} contains text longer than {limit} characters")
+
+
+async def _handle_unified_campaigns_add(client, args):
+    campaigns = []
+    for item in args["campaigns"]:
+        weekly_limit = _rubles_to_micros(item["weekly_spend_limit"])
+        if weekly_limit <= 0:
+            raise ValueError("weekly_spend_limit must be greater than zero")
+        search = {
+            "BiddingStrategyType": item.get("search_strategy", "WB_MAXIMUM_CLICKS"),
+            "WbMaximumClicks": {"WeeklySpendLimit": weekly_limit},
+        }
+        network = {"BiddingStrategyType": item.get("network_strategy", "SERVING_OFF")}
+        unified = {
+            "BiddingStrategy": {"Search": search, "Network": network},
+            "Settings": [
+                {"Option": "ADD_METRICA_TAG", "Value": "YES"},
+                {"Option": "ENABLE_SITE_MONITORING", "Value": "YES"},
+                {"Option": "CAMPAIGN_EXACT_PHRASE_MATCHING_ENABLED", "Value": "YES" if item.get("exact_phrase_matching") else "NO"},
+            ],
+        }
+        if counter_ids := item.get("counter_ids"):
+            unified["CounterIds"] = {"Items": counter_ids}
+        if tracking_params := item.get("tracking_params"):
+            unified["TrackingParams"] = tracking_params
+        campaign = {"Name": item["name"], "StartDate": item["start_date"], "UnifiedCampaign": unified}
+        if end_date := item.get("end_date"):
+            campaign["EndDate"] = end_date
+        campaigns.append(campaign)
+    data = await _api501(client, "campaigns", "add", {"Campaigns": campaigns})
+    return _result(data.get("result", data))
+
+
+async def _handle_unified_adgroups_add(client, args):
+    groups = []
+    for item in args["groups"]:
+        group = {
+            "CampaignId": item["campaign_id"],
+            "Name": item["name"],
+            "RegionIds": item["region_ids"],
+            "UnifiedAdGroup": {"OfferRetargeting": item.get("offer_retargeting", "NO")},
+        }
+        if negative_keywords := item.get("negative_keywords"):
+            group["NegativeKeywords"] = {"Items": negative_keywords}
+        groups.append(group)
+    data = await _api501(client, "adgroups", "add", {"AdGroups": groups})
+    return _result(data.get("result", data))
+
+
+async def _handle_responsive_ads_add(client, args):
+    ads = []
+    for item in args["ads"]:
+        _validate_string_items(item["titles"], field="titles", minimum=1, maximum=7, limit=56)
+        _validate_string_items(item["texts"], field="texts", minimum=1, maximum=3, limit=81)
+        responsive = {"Titles": item["titles"], "Texts": item["texts"], "Href": item["href"]}
+        if image_hashes := item.get("ad_image_hashes"):
+            if not 1 <= len(image_hashes) <= 5:
+                raise ValueError("ad_image_hashes must contain from 1 to 5 items")
+            responsive["AdImageHashes"] = image_hashes
+        if sitelink_set_id := item.get("sitelink_set_id"):
+            responsive["SitelinkSetId"] = sitelink_set_id
+        if ad_extension_ids := item.get("ad_extension_ids"):
+            responsive["AdExtensionIds"] = ad_extension_ids
+        if erir_ad_description := item.get("erir_ad_description"):
+            responsive["ErirAdDescription"] = erir_ad_description
+        ads.append({"AdGroupId": item["ad_group_id"], "ResponsiveAd": responsive})
+    data = await _api501(client, "ads", "add", {"Ads": ads})
     return _result(data.get("result", data))
 
 
